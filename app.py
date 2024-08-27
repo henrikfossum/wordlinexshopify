@@ -1,6 +1,21 @@
 import streamlit as st
 import pandas as pd
 
+# Custom CSS for reducing padding
+st.markdown("""
+    <style>
+    .stFileUploader label, .stSelectbox label {
+        font-size: 16px;
+        margin-bottom: 0px;
+        padding-bottom: 0px;
+    }
+    .stFileUploader .uploadLabel, .stSelectbox .uploadLabel {
+        margin-top: 0px;
+        padding-top: 0px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # Merchant ID to Location mapping
 merchant_id_mapping = {
     65778282: 'Oslo',
@@ -12,6 +27,9 @@ merchant_id_mapping = {
 
 def process_files(shopify_df, wordline_df, selected_location):
     try:
+        # Filter out transactions with "Svea Checkout" in Shopify data
+        shopify_df = shopify_df[shopify_df['Payment Method'] != 'Svea Checkout']
+
         # Ensure all locations are strings and strip "Unaas Cycling" from location names in Shopify data
         shopify_df['Location'] = shopify_df['Location'].astype(str).str.replace('Unaas Cycling ', '', regex=False).str.strip()
 
@@ -22,8 +40,8 @@ def process_files(shopify_df, wordline_df, selected_location):
         shopify_df = shopify_df[shopify_df['Location'] == selected_location]
         wordline_df = wordline_df[wordline_df['Location'] == selected_location]
 
-        st.write(f"Filtered Shopify DataFrame shape: {shopify_df.shape}")
-        st.write(f"Filtered Wordline DataFrame shape: {wordline_df.shape}")
+        st.write(f"Filtrert Shopify DataFrame form: {shopify_df.shape}")
+        st.write(f"Filtrert Wordline DataFrame form: {wordline_df.shape}")
 
         # Convert columns to appropriate types
         shopify_df['Total'] = pd.to_numeric(shopify_df['Total'].astype(str).str.replace(',', '').str.replace(' ', ''), errors='coerce')
@@ -71,19 +89,20 @@ def process_files(shopify_df, wordline_df, selected_location):
                 wordline_time = wordline_row['TRANSACTION_DATETIME']
 
                 if (abs(shopify_amount - wordline_amount) <= 5 and 
-                    abs((shopify_time - wordline_time).total_seconds()) <= 300):  # 5 minutes = 300 seconds
+                    abs((shopify_time - wordline_time).total_seconds()) <= 300):  # 5 minutter = 300 sekunder
                     matched_records.append({
-                        'Shopify Order ID': shopify_row['Id'],  # Assuming 'Id' is unique
-                        'Wordline Payment ID': wordline_row['TRANSACTION REF'],  # Adjust as needed
+                        'Shopify Name': shopify_row['Name'],  # Inkluder Shopify Name
+                        'Shopify Order ID': shopify_row['Id'],  # Antatt unik 'Id'
+                        'Shopify Amount': shopify_amount,
+                        'Wordline Amount': wordline_amount,
                         'Amount Difference': shopify_amount - wordline_amount,
-                        'Time Difference (seconds)': abs((shopify_time - wordline_time).total_seconds()),
                         'Shopify Time': shopify_time,
                         'Wordline Time': wordline_time,
-                        'Shopify Amount': shopify_amount,
-                        'Wordline Amount': wordline_amount
+                        'Time Difference (seconds)': abs((shopify_time - wordline_time).total_seconds()),
+                        'Wordline Payment ID': wordline_row['TRANSACTION REF']  # Juster ved behov
                     })
                     match_found = True
-                    unmatched_wordline = unmatched_wordline.drop(j)  # Remove matched Wordline payment
+                    unmatched_wordline = unmatched_wordline.drop(j)  # Fjern matchet Wordline betaling
                     break
             
             if not match_found:
@@ -92,64 +111,78 @@ def process_files(shopify_df, wordline_df, selected_location):
         # Reorder columns for matched records
         if matched_records:
             matched_df = pd.DataFrame(matched_records)
-            st.write("Matched Records:")
+            matched_df = matched_df[
+                ['Shopify Name', 'Shopify Order ID', 'Shopify Amount', 'Wordline Amount', 'Amount Difference', 'Shopify Time', 'Wordline Time', 'Time Difference (seconds)', 'Wordline Payment ID']
+            ]
+            st.markdown('<h2 style="text-align:center;">Matchende ordre:</h2>', unsafe_allow_html=True)
             st.dataframe(matched_df)
 
-        # Reorder columns for unmatched Shopify orders
-        if unmatched_shopify:
-            unmatched_shopify_df = pd.DataFrame(unmatched_shopify)
-            unmatched_shopify_df = unmatched_shopify_df[['Name', 'Financial Status', 'Id', 'Created at', 'Paid Amount']]  # Show Name, Financial Status, ID, time, and paid amount
-            st.write("Unmatched Shopify Orders:")
-            st.dataframe(unmatched_shopify_df)
+        # Side-by-Side Display for Unmatched Records
+        st.markdown('<h2 style="text-align:center;">Sammenligning av ordre og betalinger uten match</h2>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
 
-        # Reorder columns for unmatched Wordline payments
-        if not unmatched_wordline.empty:
-            unmatched_wordline = unmatched_wordline[['TRANSACTION REF', 'TRANSACTION_DATETIME', 'SALE AMOUNT']]  # Only show ID, time, and amount
-            st.write("Unmatched Wordline Payments:")
-            st.dataframe(unmatched_wordline)
+        with col1:
+            st.write("Umatchede Shopify Ordre:")
+            unmatched_shopify_df = pd.DataFrame(unmatched_shopify)
+            if not unmatched_shopify_df.empty:
+                unmatched_shopify_df = unmatched_shopify_df[['Name', 'Paid Amount', 'Created at', 'Id']]  # Vis relevante kolonner
+                st.dataframe(unmatched_shopify_df)
+            else:
+                st.write("Ingen umatchede Shopify ordre.")
+
+        with col2:
+            st.write("Umatchede Wordline Betalinger:")
+            if not unmatched_wordline.empty:
+                unmatched_wordline_df = unmatched_wordline[['SALE AMOUNT', 'TRANSACTION_DATETIME', 'TRANSACTION REF']]  # Vis relevante kolonner
+                st.dataframe(unmatched_wordline_df)
+            else:
+                st.write("Ingen umatchede Wordline betalinger.")
 
     except pd.errors.EmptyDataError:
-        st.error("The file is empty or could not be read. Please check the file and try again.")
+        st.error("En eller begge filene er tomme. Vennligst last opp gyldige filer.")
     except pd.errors.ParserError:
-        st.error("There was an error parsing the file. Please ensure the file is properly formatted.")
+        st.error("Det oppsto en feil ved parsing av filen. Vennligst sørg for at filen er riktig formatert.")
     except Exception as e:
-        st.error(f"An unexpected error occurred: {str(e)}")
+        st.error(f"En uventet feil oppsto: {str(e)}")
 
 # Streamlit UI
-st.title("Shopify Orders and Wordline Payments Matching")
+st.title("Shopify Ordre og Wordline Betalinger Matching")
 
 # Upload files
-shopify_file = st.file_uploader("Upload Shopify Orders CSV", type="csv")
-wordline_file = st.file_uploader("Upload Wordline Payments Excel", type="xlsx")
+st.markdown('<div style="margin-bottom: -15px;"><label style="font-size:18px;">Last opp Shopify Ordre CSV</label></div>', unsafe_allow_html=True)
+shopify_file = st.file_uploader("", type="csv")
+st.markdown('<div style="margin-bottom: -15px;"><label style="font-size:18px;">Last opp Wordline Betalinger Excel</label></div>', unsafe_allow_html=True)
+wordline_file = st.file_uploader("", type="xlsx")
 
 if shopify_file and wordline_file:
     try:
-        # Read the uploaded files
+        # Les de opplastede filene
         shopify_df = pd.read_csv(shopify_file)
         wordline_df = pd.read_excel(wordline_file, sheet_name=1)
         
-        # Map Merchant IDs to Locations in the Wordline data
+        # Map Merchant IDs til Lokasjoner i Wordline data
         wordline_df['Location'] = wordline_df['MERCHANT ID'].map(merchant_id_mapping)
 
-        # Get unique locations from both files
+        # Hent unike lokasjoner fra begge filer
         shopify_locations = shopify_df['Location'].dropna().unique().tolist()
         wordline_locations = wordline_df['Location'].dropna().unique().tolist()
 
-        # Combine and sort locations, ensuring no NaNs
+        # Kombiner og sorter lokasjoner, og sørg for at ingen NaNs
         all_locations = sorted(list(set(shopify_locations + wordline_locations)), key=str)
 
-        # Remove any potential 'nan' entries from the list
+        # Fjern eventuelle 'nan' oppføringer fra listen
         all_locations = [loc for loc in all_locations if loc.lower() != 'nan']
 
-        # Let the user select the location
-        selected_location = st.selectbox("Select the Location to Match", all_locations)
+        # La brukeren velge lokasjon
+        st.markdown('<div style="margin-bottom: -15px;"><label style="font-size:18px;">Velg Lokasjon å Matche</label></div>', unsafe_allow_html=True)
+        selected_location = st.selectbox("", all_locations)
 
-        # Process files with selected location
+        # Behandle filer med valgt lokasjon
         process_files(shopify_df, wordline_df, selected_location)
 
     except pd.errors.EmptyDataError:
-        st.error("One or both files are empty. Please upload valid files.")
+        st.error("En eller begge filene er tomme. Vennligst last opp gyldige filer.")
     except pd.errors.ParserError:
-        st.error("There was an error parsing the file. Please ensure the file is properly formatted.")
+        st.error("Det oppsto en feil ved parsing av filen. Vennligst sørg for at filen er riktig formatert.")
     except Exception as e:
-        st.error(f"An unexpected error occurred: {str(e)}")
+        st.error(f"En uventet feil oppsto: {str(e)}")
